@@ -38,9 +38,27 @@ namespace wasm {
 
 Name LOGGER("log_execution");
 
+enum class LogKind {
+  FunctionEntry,
+  Return,
+  LoopHeader,
+  // Up to 4 entries fit in 2 bits.
+  // If adding more entries, need to increase the kind bit size below.
+};
+
+union LogID {
+  int32_t raw;
+  struct {
+    uint32_t id : 30;
+    LogKind kind : 2;
+  };
+};
+static_assert(sizeof(LogID) == sizeof(int32_t), "LogID must fit in 32-bits");
+
 struct LogExecution : public WalkerPass<PostWalker<LogExecution>> {
   // The module name the logger function is imported from.
   IString loggerModule;
+  uint32_t nextID = 0;
 
   // Adds calls to new imports.
   bool addsEffects() override { return true; }
@@ -48,12 +66,17 @@ struct LogExecution : public WalkerPass<PostWalker<LogExecution>> {
   void run(Module* module) override {
     auto& options = getPassOptions();
     loggerModule = options.getArgumentOrDefault("log-execution", "");
+    nextID = 0;
     super::run(module);
   }
 
-  void visitLoop(Loop* curr) { curr->body = makeLogCall(curr->body); }
+  void visitLoop(Loop* curr) {
+    curr->body = makeLogCall(curr->body, LogKind::LoopHeader);
+  }
 
-  void visitReturn(Return* curr) { replaceCurrent(makeLogCall(curr)); }
+  void visitReturn(Return* curr) {
+    replaceCurrent(makeLogCall(curr, LogKind::Return));
+  }
 
   void visitFunction(Function* curr) {
     if (curr->imported()) {
@@ -61,10 +84,10 @@ struct LogExecution : public WalkerPass<PostWalker<LogExecution>> {
     }
     if (auto* block = curr->body->dynCast<Block>()) {
       if (!block->list.empty()) {
-        block->list.back() = makeLogCall(block->list.back());
+        block->list.back() = makeLogCall(block->list.back(), LogKind::Return);
       }
     }
-    curr->body = makeLogCall(curr->body);
+    curr->body = makeLogCall(curr->body, LogKind::FunctionEntry);
   }
 
   void visitModule(Module* curr) {
@@ -105,12 +128,13 @@ struct LogExecution : public WalkerPass<PostWalker<LogExecution>> {
   }
 
 private:
-  Expression* makeLogCall(Expression* curr) {
-    static Index id = 0;
+  Expression* makeLogCall(Expression* curr, LogKind kind) {
     Builder builder(*getModule());
+    LogID id;
+    id.id = nextID++;
+    id.kind = kind;
     return builder.makeSequence(
-      builder.makeCall(LOGGER, {builder.makeConst(int32_t(id++))}, Type::none),
-      curr);
+      builder.makeCall(LOGGER, {builder.makeConst(id.raw)}, Type::none), curr);
   }
 };
 
