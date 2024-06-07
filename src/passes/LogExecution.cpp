@@ -27,10 +27,19 @@
 // instruments say a return, there will be no code run in the return's
 // value.
 //
+// A list of functions not to instrument can be provided with following pass
+// argument. This list can be used with a response file (@filename, which is
+// then loaded from the file).
+//
+//   --pass-arg=log-execution-ignorelist@name1,name2,name3
+//
 
 #include "asmjs/shared-constants.h"
 #include "shared-constants.h"
+#include "support/file.h"
+#include "support/string.h"
 #include <pass.h>
+#include <wasm-binary.h>
 #include <wasm-builder.h>
 #include <wasm.h>
 
@@ -59,6 +68,7 @@ struct LogExecution : public WalkerPass<PostWalker<LogExecution>> {
   // The module name the logger function is imported from.
   IString loggerModule;
   uint32_t nextID = 0;
+  std::set<Name> ignoreListNames;
 
   // Adds calls to new imports.
   bool addsEffects() override { return true; }
@@ -66,6 +76,18 @@ struct LogExecution : public WalkerPass<PostWalker<LogExecution>> {
   void run(Module* module) override {
     auto& options = getPassOptions();
     loggerModule = options.getArgumentOrDefault("log-execution", "");
+
+    auto ignoreListInput =
+      options.getArgumentOrDefault("log-execution-ignorelist", "");
+    String::Split ignoreList(
+      String::trim(read_possible_response_file(ignoreListInput)),
+      String::Split::NewLineOr(","));
+
+    ignoreListNames.clear();
+    for (auto& name : ignoreList) {
+      ignoreListNames.insert(WasmBinaryReader::escape(name));
+    }
+
     nextID = 0;
     super::run(module);
   }
@@ -88,6 +110,15 @@ struct LogExecution : public WalkerPass<PostWalker<LogExecution>> {
       }
     }
     curr->body = makeLogCall(curr->body, LogKind::FunctionEntry);
+  }
+
+  void walkFunction(Function* curr) {
+    // If the function name is in the ignore list, don't walk the function or
+    // its children so we don't insert log calls.
+    bool ignore = ignoreListNames.count(curr->name) > 0;
+    if (!ignore) {
+      super::walkFunction(curr);
+    }
   }
 
   void visitModule(Module* curr) {
