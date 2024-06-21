@@ -33,6 +33,13 @@
 //
 //   --pass-arg=log-execution-ignorelist@name1,name2,name3
 //
+// Alternatively, a list of specific functions to instrument can be provided with
+// following pass argument. This list can be used with a response file (@filename,
+// which is then loaded from the file). With this argument, only the functions
+// specified will be instrumented.
+//
+//   --pass-arg=log-execution-includelist@name1,name2,name3
+//
 
 #include "asmjs/shared-constants.h"
 #include "shared-constants.h"
@@ -69,6 +76,8 @@ struct LogExecution : public WalkerPass<PostWalker<LogExecution>> {
   IString loggerModule;
   uint32_t nextID = 0;
   std::set<Name> ignoreListNames;
+  std::set<Name> includeListNames;
+  bool noStd = false;
 
   // Adds calls to new imports.
   bool addsEffects() override { return true; }
@@ -87,6 +96,23 @@ struct LogExecution : public WalkerPass<PostWalker<LogExecution>> {
     for (auto& name : ignoreList) {
       ignoreListNames.insert(WasmBinaryReader::escape(name));
     }
+
+    auto includeListInput =
+      options.getArgumentOrDefault("log-execution-includelist", "");
+    String::Split includeList(
+      String::trim(read_possible_response_file(includeListInput)),
+      String::Split::NewLineOr(","));
+
+    includeListNames.clear();
+    for (auto& name : includeList) {
+      includeListNames.insert(WasmBinaryReader::escape(name));
+    }
+    // TODO: show error if both lists are specified.
+
+    // TODO: temporary workaround to ignore functions in std:: namespace. Only
+    // works if the symbol actually starts with `std::`. A way to generate a list
+    // of function names coming from the C++ standard library would be better.
+    noStd = options.getArgumentOrDefault("log-execution-nostd", "") != "";
 
     nextID = 0;
     super::run(module);
@@ -113,9 +139,20 @@ struct LogExecution : public WalkerPass<PostWalker<LogExecution>> {
   }
 
   void walkFunction(Function* curr) {
-    // If the function name is in the ignore list, don't walk the function or
-    // its children so we don't insert log calls.
-    bool ignore = ignoreListNames.count(curr->name) > 0;
+    // Decide whether to walk the function and its children to insert log calls.
+    bool ignore = false;
+    if (includeListNames.size() > 0) {
+      // If we have a list of names to include, ignore anything that isn't on that list.
+      ignore = includeListNames.count(curr->name) == 0;
+    } else {
+      // Otherwise, ignore everything that is in the ignore list.
+      ignore = ignoreListNames.count(curr->name) > 0;
+      if (noStd) {
+        ignore = ignore || curr->name.startsWith("std::");
+      }
+    }
+
+
     if (!ignore) {
       super::walkFunction(curr);
     }
