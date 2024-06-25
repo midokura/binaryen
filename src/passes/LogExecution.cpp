@@ -40,11 +40,16 @@
 //
 //   --pass-arg=log-execution-includelist@name1,name2,name3
 //
+//
+//
+// To output a list of IDs corresponding to function names, use the following argument:
+//   --pass-arg=log-execution-export-map@filename.map
 
 #include "asmjs/shared-constants.h"
 #include "shared-constants.h"
 #include "support/file.h"
 #include "support/string.h"
+#include "support/path.h"
 #include <pass.h>
 #include <wasm-binary.h>
 #include <wasm-builder.h>
@@ -78,6 +83,7 @@ struct LogExecution : public WalkerPass<PostWalker<LogExecution>> {
   std::set<Name> ignoreListNames;
   std::set<Name> includeListNames;
   bool noStd = false;
+  std::vector<std::tuple<Name, uint32_t>> functionNameIdPairs;
 
   // Adds calls to new imports.
   bool addsEffects() override { return true; }
@@ -114,8 +120,20 @@ struct LogExecution : public WalkerPass<PostWalker<LogExecution>> {
     // of function names coming from the C++ standard library would be better.
     noStd = options.getArgumentOrDefault("log-execution-nostd", "") != "";
 
+    auto exportMap = options.getArgumentOrDefault("log-execution-export-map", "");
+
     nextID = 0;
+    functionNameIdPairs.clear();
     super::run(module);
+
+    if (exportMap.size() > 0) {
+      std::ofstream exportMapFile;
+      exportMapFile.open(wasm::Path::to_path(exportMap), std::ofstream::out);
+      for (auto& [name, id] : functionNameIdPairs) {
+        exportMapFile << id << ":" << name.str << "\n";
+      }
+      exportMapFile.close();
+    }
   }
 
   void visitLoop(Loop* curr) {
@@ -135,7 +153,10 @@ struct LogExecution : public WalkerPass<PostWalker<LogExecution>> {
         block->list.back() = makeLogCall(block->list.back(), LogKind::Return);
       }
     }
-    curr->body = makeLogCall(curr->body, LogKind::FunctionEntry);
+    uint32_t functionId;
+    curr->body = makeLogCall(curr->body, LogKind::FunctionEntry, &functionId);
+
+    functionNameIdPairs.emplace_back(std::make_tuple(curr->name, functionId));
   }
 
   void walkFunction(Function* curr) {
@@ -196,11 +217,14 @@ struct LogExecution : public WalkerPass<PostWalker<LogExecution>> {
   }
 
 private:
-  Expression* makeLogCall(Expression* curr, LogKind kind) {
+  Expression* makeLogCall(Expression* curr, LogKind kind, uint32_t* outLogId = nullptr) {
     Builder builder(*getModule());
     LogID id;
     id.id = nextID++;
     id.kind = kind;
+    if (outLogId) {
+      *outLogId = id.id;
+    }
     return builder.makeSequence(
       builder.makeCall(LOGGER, {builder.makeConst(id.raw)}, Type::none), curr);
   }
