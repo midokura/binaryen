@@ -54,6 +54,7 @@
 #include <wasm-binary.h>
 #include <wasm-builder.h>
 #include <wasm.h>
+#include <charconv>
 
 namespace wasm {
 
@@ -130,7 +131,7 @@ struct LogExecution : public WalkerPass<PostWalker<LogExecution>> {
       std::ofstream exportMapFile;
       exportMapFile.open(wasm::Path::to_path(exportMap), std::ofstream::out);
       for (auto& [name, id] : functionNameIdPairs) {
-        exportMapFile << id << ":" << name.str << "\n";
+        exportMapFile << id << ":" << unescape(name.str) << "\n";
       }
       exportMapFile.close();
     }
@@ -227,6 +228,24 @@ private:
     }
     return builder.makeSequence(
       builder.makeCall(LOGGER, {builder.makeConst(id.raw)}, Type::none), curr);
+  }
+
+  // Taken from wasm-split.cpp. Modified to use std::string_view as input
+  static std::string unescape(std::string_view input) {
+    std::string output;
+    for (size_t i = 0; i < input.length(); i++) {
+      if ((input[i] == '\\') && (i + 2 < input.length()) &&
+          isxdigit(input[i + 1]) && isxdigit(input[i + 2])) {
+        std::string_view byte = input.substr(i + 1, 2);
+        i += 2;
+        int chr = 0;
+        std::from_chars(byte.begin(), byte.end(), chr, 16);
+        output.push_back((char)chr);
+      } else {
+        output.push_back(input[i]);
+      }
+    }
+    return output;
   }
 };
 
